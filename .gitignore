@@ -1,0 +1,4 @@
+/openai
+*.txt
+chat.py
+disc_rec.py
