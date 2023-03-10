@@ -32,29 +32,20 @@ async def get_openai_response(message):
         reply_history = await get_reply_history(message.channel, message, client.user)
 
         prompt += reply_history
-        # prompt.append(new_message)
-
-        # print(prompt)
-
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=prompt,
-            temperature=0.6,
-            max_tokens=500
-        )
-
     else:
         prompt.append(new_message)
-        # print(prompt)
+
+    try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=prompt,
             temperature=0.6,
             max_tokens=500
         )
+        answer = response.choices[0].message.content
 
-    # 回答を取得します
-    answer = response.choices[0].message.content
+    except Exception as e:
+        answer = e
 
     return answer
 
