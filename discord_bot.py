@@ -20,7 +20,8 @@ async def get_openai_response(message):
     with open("char_setting.txt", "r") as f:
         settings_text = f.read().strip()
 
-    prompt = [{"role": "system", "content": settings_text}]
+    prompt = []
+    system_message = {"role": "system", "content": settings_text}
     new_message = {"role": "user", "content": message.content}
 
     # リプライメッセージである場合
@@ -33,23 +34,28 @@ async def get_openai_response(message):
 
         prompt += reply_history
     else:
+        prompt.append(system_message)
         prompt.append(new_message)
 
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4",
             messages=prompt,
-            temperature=0.6,
+            temperature=0,
             max_tokens=500
         )
         answer = response.choices[0].message.content
 
     except Exception as e:
-        answer = e
+        answer = e.message
 
     return answer
 
 async def get_reply_history(channel,message, bot_user):
+    with open("char_setting.txt", "r") as f:
+        settings_text = f.read().strip()
+
+    system_message = {"role": "system", "content": settings_text}
     # リプライチェインを格納する空の配列を作成する
     reply_chain = []
 
@@ -58,6 +64,8 @@ async def get_reply_history(channel,message, bot_user):
         reply_chain.append({"role": "assistant", "content": message.content})
     else:
         reply_chain.append({"role": "user", "content": message.content})
+
+    reply_chain.append(system_message)
 
     # リプライチェインに属する全てのメッセージを取得する
     while message.reference and len(reply_chain) < 8:
