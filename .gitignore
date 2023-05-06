@@ -1,5 +1,6 @@
 /openai
-*.txt
+char_setting.txt
+.env
 chat.py
 disc_rec.py
 nohup.out

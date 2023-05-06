@@ -1,6 +1,29 @@
 import discord
-from discord import Intents
 import openai
+import os
+import datetime
+import pinecone
+
+from discord import Intents
+from dotenv import load_dotenv
+
+from langchain import LLMChain, LLMMathChain, PromptTemplate
+from langchain.chat_models import ChatOpenAI
+
+from langchain.chains import ConversationChain
+from langchain.memory import (
+    VectorStoreRetrieverMemory,
+)
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import Pinecone
+from langchain.agents import (
+    Tool,
+    AgentType,
+    initialize_agent
+)
+from langchain.utilities import (
+    GoogleSearchAPIWrapper
+)
 
 intents = Intents.all()
 intents.members = True  # サーバーメンバーの取得に必要
@@ -8,80 +31,92 @@ intents.members = True  # サーバーメンバーの取得に必要
 client = discord.Client(intents=intents)
 voice_client = None
 
-# OpenAI APIの認証キーを設定します
-with open("openai_key.txt", "r") as f:
-    api_key = f.read().strip()
+load_dotenv()
 
-openai.api_key = api_key
+DISCORD_API_KEY = os.getenv('DISCORD_API_KEY')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
+PINECONE_ENVIRONMENT = os.getenv('PINECONE_ENVIRONMENT')
+PINECONE_INDEX_NAME = os.getenv('PINECONE_INDEX_NAME')
+GOOGLE_CSE_ID = os.getenv('GOOGLE_CSE_ID')
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+
+openai.api_key = OPENAI_API_KEY
+
+
+# Botのキャラ設定をテキストファイルで用意しておく
+with open("char_setting.txt", "r") as f:
+    settings_text = f.read().strip()
+
+# 要約用テンプレートの読み込み
+with open("summary_template.txt", "r") as f:
+    summary_template = f.read().strip()
+
+conversation_prompt = PromptTemplate(
+    input_variables=["history", "input"], template=settings_text
+)
+
+# summary_prompt = PromptTemplate(
+#     input_variables=["summary", "new_lines"], template=summary_template
+# )
+
+llm = ChatOpenAI(
+    model_name="gpt-3.5-turbo",
+    max_tokens=200,
+    temperature=0.4
+)
+
+# llm = ChatOpenAI(
+#     model_name="gpt-4",
+#     max_tokens=200,
+#     temperature=0.4
+# )
+
+# summarize_llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+
+# vectorstore
+pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+pinecone_index = pinecone.Index(PINECONE_INDEX_NAME)
+embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+vectorstore = Pinecone(pinecone_index, embeddings.embed_query, "text")
+
+retriever = vectorstore.as_retriever(search_kwargs=dict(k=3))
+memory = VectorStoreRetrieverMemory(retriever=retriever)
+
+
+search = GoogleSearchAPIWrapper()
+llm_math_chain = LLMMathChain(llm=llm, verbose=True)
+tools = [
+    Tool(
+        name = "Search",
+        func=search.run,
+        description="最新の話題について答える場合に利用することができます。また、今日の気温、天気、為替レートなど現在の状況についても確認することができます。入力は検索内容です。回答は日本語で行います。"
+    ),
+    Tool(
+        name="Calculator",
+        func=llm_math_chain.run,
+        description="計算をする場合に利用することができます。"
+    )
+]
+
+
+# 会話チェーン
+conversation = ConversationChain(memory=memory, prompt=conversation_prompt, llm=llm, verbose=True)
+agent_chain = initialize_agent(tools, llm, agent=AgentType.CHAT_ZERO_SHOT_REACT_DESCRIPTION, verbose=True, memory=memory, prompt=conversation_prompt)
 
 # OpenAI APIにメッセージを送信して回答を取得する関数を定義します
 async def get_openai_response(message):
-    # Botのキャラ設定をテキストファイルで用意しておく
-    with open("char_setting.txt", "r") as f:
-        settings_text = f.read().strip()
+    dt_now = datetime.datetime.now()
+    prefix = "[now:" + dt_now.strftime('%Y/%m/%d %H:%M:%S') + "]"
+    input = prefix + message.content
 
-    prompt = []
-    system_message = {"role": "system", "content": settings_text}
-    new_message = {"role": "user", "content": message.content}
-
-    # リプライメッセージである場合
-    if message.reference:
-        # リプライの送信元メッセージを取得する
-        # reply_message = await message.channel.fetch_message(message.reference.message_id)
-
-        # リプライ履歴を取得する
-        reply_history = await get_reply_history(message.channel, message, client.user)
-
-        prompt += reply_history
+    # 明示的に検索を指示した場合のみagentを使って回答を得る
+    if "検索して" in message.content:
+        response = agent_chain.run(input=input)
     else:
-        prompt.append(system_message)
-        prompt.append(new_message)
+        response = conversation.predict(input=input)
 
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=prompt,
-            temperature=0,
-            max_tokens=500
-        )
-        answer = response.choices[0].message.content
-
-    except Exception as e:
-        answer = e.message
-
-    return answer
-
-async def get_reply_history(channel,message, bot_user):
-    with open("char_setting.txt", "r") as f:
-        settings_text = f.read().strip()
-
-    system_message = {"role": "system", "content": settings_text}
-    # リプライチェインを格納する空の配列を作成する
-    reply_chain = []
-
-    # リプライチェインの最初のメッセージを追加する
-    if message.author == bot_user:
-        reply_chain.append({"role": "assistant", "content": message.content})
-    else:
-        reply_chain.append({"role": "user", "content": message.content})
-
-    reply_chain.append(system_message)
-
-    # リプライチェインに属する全てのメッセージを取得する
-    while message.reference and len(reply_chain) < 8:
-        reply_message = await channel.fetch_message(message.reference.message_id)
-        message = reply_message
-
-        # リプライチェインに属するメッセージを追加する
-        if message.author == bot_user:
-            reply_chain.append({"role": "assistant", "content": message.content})
-        else:
-            reply_chain.append({"role": "user", "content": message.content})
-
-    # 取得したリプライチェインを逆順に並び替える（古いものから新しいものの順になるようにする）
-    reply_chain.reverse()
-
-    return reply_chain
+    return response
 
 # ボットがメッセージを受信したときに呼び出される関数を定義します
 @client.event
@@ -103,13 +138,5 @@ async def on_message(message):
             # 回答をチャットに送信します
             await message.reply(answer)
 
-async def on_ready():
-    print("Logged in as")
-    print(client.user.name)
-    print(client.user.id)
-    print("------")
-
 # Discordボットを開始します
-with open("discord_key.txt", "r") as f:
-    discord_api_key = f.read().strip()
-client.run(discord_api_key)
+client.run(DISCORD_API_KEY)
